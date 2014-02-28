@@ -57,99 +57,105 @@ public abstract class HttpContentDecoder extends MessageToMessageDecoder<HttpObj
 		this.message = message;
 	}
 	
-    public void decode2(ChannelHandlerContext ctx, HttpObject msg, List<Object> out) throws Exception {
-        if (msg instanceof HttpResponse && ((HttpResponse) msg).getStatus().code() == 100) {
+    public void decode2(ChannelHandlerContext ctx, HttpObject msg, List<Object> out) {
+    	try{
+    		  if (msg instanceof HttpResponse && ((HttpResponse) msg).getStatus().code() == 100) {
 
-            if (!(msg instanceof LastHttpContent)) {
-                continueResponse = true;
-            }
-            // 100-continue response must be passed through.
-            out.add(ReferenceCountUtil.retain(msg));
-            return;
-        }
+    	            if (!(msg instanceof LastHttpContent)) {
+    	                continueResponse = true;
+    	            }
+    	            // 100-continue response must be passed through.
+    	            out.add(ReferenceCountUtil.retain(msg));
+    	            return;
+    	        }
 
-        if (continueResponse) {
-            if (msg instanceof LastHttpContent) {
-                continueResponse = false;
-            }
-            // 100-continue response must be passed through.
-            out.add(ReferenceCountUtil.retain(msg));
-            return;
-        }
+    	        if (continueResponse) {
+    	            if (msg instanceof LastHttpContent) {
+    	                continueResponse = false;
+    	            }
+    	            // 100-continue response must be passed through.
+    	            out.add(ReferenceCountUtil.retain(msg));
+    	            return;
+    	        }
 
-        if (msg instanceof HttpMessage) {
-            assert message == null;
-            message = (HttpMessage) msg;
-            decodeStarted = false;
-            cleanup();
-        }
+    	        if (msg instanceof HttpMessage) {
+    	            assert message == null;
+    	            message = (HttpMessage) msg;
+    	            decodeStarted = false;
+    	            cleanup();
+    	        }
 
-        if (msg instanceof HttpContent) {
-            final HttpContent c = (HttpContent) msg;
+    	        if (msg instanceof HttpContent) {
+    	            final HttpContent c = (HttpContent) msg;
 
-            if (!decodeStarted) {
-                decodeStarted = true;
-                HttpMessage message = this.message;
-                HttpHeaders headers = message.headers();
-                this.message = null;
+    	            
+    	            if (!decodeStarted) {
+    	                decodeStarted = true;
+    	                HttpMessage message = this.message;
+    	                HttpHeaders headers = message.headers();
+    	                this.message = null;
 
-                // Determine the content encoding.
-                String contentEncoding = headers.get(HttpHeaders.Names.CONTENT_ENCODING);
-                if (contentEncoding != null) {
-                    contentEncoding = contentEncoding.trim();
-                } else {
-                    contentEncoding = HttpHeaders.Values.IDENTITY;
-                }
+    	                // Determine the content encoding.
+    	                String contentEncoding = headers.get(HttpHeaders.Names.CONTENT_ENCODING);
+    	                if (contentEncoding != null) {
+    	                    contentEncoding = contentEncoding.trim();
+    	                } else {
+    	                    contentEncoding = HttpHeaders.Values.IDENTITY;
+    	                }
+    	                decoder = this.newContentDecoder(contentEncoding) ;
+    	                if (decoder!= null) {
+    	                    // Decode the content and remove or replace the existing headers
+    	                    // so that the message looks like a decoded message.
+    	                    String targetContentEncoding = getTargetContentEncoding(contentEncoding);
+    	                    if (HttpHeaders.Values.IDENTITY.equals(targetContentEncoding)) {
+    	                        // Do NOT set the 'Content-Encoding' header if the target encoding is 'identity'
+    	                        // as per: http://tools.ietf.org/html/rfc2616#section-14.11
+    	                        headers.remove(HttpHeaders.Names.CONTENT_ENCODING);
+    	                    } else {
+    	                        headers.set(HttpHeaders.Names.CONTENT_ENCODING, targetContentEncoding);
+    	                    }
 
-                if ((decoder = newContentDecoder(contentEncoding)) != null) {
-                    // Decode the content and remove or replace the existing headers
-                    // so that the message looks like a decoded message.
-                    String targetContentEncoding = getTargetContentEncoding(contentEncoding);
-                    if (HttpHeaders.Values.IDENTITY.equals(targetContentEncoding)) {
-                        // Do NOT set the 'Content-Encoding' header if the target encoding is 'identity'
-                        // as per: http://tools.ietf.org/html/rfc2616#section-14.11
-                        headers.remove(HttpHeaders.Names.CONTENT_ENCODING);
-                    } else {
-                        headers.set(HttpHeaders.Names.CONTENT_ENCODING, targetContentEncoding);
-                    }
+//    	                    out.add(message);
+    	                    decodeContent(c, out);
 
-//                    out.add(message);
-                    decodeContent(c, out);
+    	                    // Replace the content length.
+    	                    if (headers.contains(HttpHeaders.Names.CONTENT_LENGTH)) {
+    	                        int contentLength = 0;
+    	                        int size = out.size();
+    	                        for (int i = 0; i < size; i++) {
+    	                            Object o = out.get(i);
+    	                            if (o instanceof HttpContent) {
+    	                                contentLength += ((HttpContent) o).content().readableBytes();
+    	                            }
+    	                        }
+    	                        headers.set(
+    	                                HttpHeaders.Names.CONTENT_LENGTH,
+    	                                Integer.toString(contentLength));
+    	                    }
+    	                    return;
+    	                }
 
-                    // Replace the content length.
-                    if (headers.contains(HttpHeaders.Names.CONTENT_LENGTH)) {
-                        int contentLength = 0;
-                        int size = out.size();
-                        for (int i = 0; i < size; i++) {
-                            Object o = out.get(i);
-                            if (o instanceof HttpContent) {
-                                contentLength += ((HttpContent) o).content().readableBytes();
-                            }
-                        }
-                        headers.set(
-                                HttpHeaders.Names.CONTENT_LENGTH,
-                                Integer.toString(contentLength));
-                    }
-                    return;
-                }
+    	                if (c instanceof LastHttpContent) {
+    	                    decodeStarted = false;
+    	                }
+//    	                out.add(message);
+    	                out.add(c.retain());
+    	                return;
+    	            }
 
-                if (c instanceof LastHttpContent) {
-                    decodeStarted = false;
-                }
-//                out.add(message);
-                out.add(c.retain());
-                return;
-            }
-
-            if (decoder != null) {
-                decodeContent(c, out);
-            } else {
-                if (c instanceof LastHttpContent) {
-                    decodeStarted = false;
-                }
-                out.add(c.retain());
-            }
-        }
+    	            if (decoder != null) {
+    	                decodeContent(c, out);
+    	            } else {
+    	                if (c instanceof LastHttpContent) {
+    	                    decodeStarted = false;
+    	                }
+    	                out.add(c.retain());
+    	            }
+    	        }
+    	}catch(Exception ex){
+    		ex.printStackTrace();
+    	}
+      
     }
 	
 

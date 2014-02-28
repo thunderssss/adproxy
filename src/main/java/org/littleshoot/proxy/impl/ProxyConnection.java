@@ -23,11 +23,13 @@ import io.netty.handler.codec.http.HttpResponse;
 import io.netty.handler.ssl.SslHandler;
 import io.netty.handler.timeout.IdleStateEvent;
 import io.netty.util.ReferenceCounted;
+import io.netty.util.concurrent.CompleteFuture;
 import io.netty.util.concurrent.Future;
 import io.netty.util.concurrent.GenericFutureListener;
 import io.netty.util.concurrent.Promise;
 
 import javax.net.ssl.SSLEngine;
+
 
 /**
  * <p>
@@ -75,10 +77,11 @@ import javax.net.ssl.SSLEngine;
  */
 abstract class ProxyConnection<I extends HttpObject> extends
         SimpleChannelInboundHandler<Object> {
+	private boolean isChunked = false;
 	/**
 	 * 记录chunk模式下总文件的大小
 	 */
-	private int chunkRespContentLength;
+	protected int chunkRespContentLength;
 	/**
 	 * 记录是否为压缩格式
 	 */
@@ -88,6 +91,13 @@ abstract class ProxyConnection<I extends HttpObject> extends
 	 */
 	private HttpContent tmpObject = null;
 	
+	
+	public boolean isChunked() {
+		return isChunked;
+	}
+	public void setChunked(boolean isChunked) {
+		this.isChunked = isChunked;
+	}
 	public void addChunkLength(int size){
 		chunkRespContentLength += size;
 	}
@@ -107,10 +117,12 @@ abstract class ProxyConnection<I extends HttpObject> extends
 	}
 
 	public void setTmpObject(HttpContent tmpObject) {
+//		if(tmpObject!=null && tmpObject.content() !=null)
+//			chunkRespContentLength += tmpObject.content().writerIndex();
 		this.tmpObject = tmpObject;
 	}
 	
-	protected HttpContentDecoder decoder = null;
+	protected HttpContentDecompressor decoder = null;
 	
     protected final ProxyConnectionLogger LOG = new ProxyConnectionLogger(this);
 
@@ -287,8 +299,11 @@ abstract class ProxyConnection<I extends HttpObject> extends
      * @param httpObject
      */
     protected void writeHttp(HttpObject httpObject) {
+    	//update by wanghaiting
         if (ProxyUtils.isLastChunk(httpObject)) {
-            channel.write(httpObject);
+        	if(httpObject != null && channel != null){
+        		channel.write(httpObject);
+        	}
             LOG.debug("Writing an empty buffer to signal the end of our chunked transfer");
             writeToChannel(Unpooled.EMPTY_BUFFER);
         } else {
@@ -306,7 +321,14 @@ abstract class ProxyConnection<I extends HttpObject> extends
     }
 
     protected ChannelFuture writeToChannel(final Object msg) {
-        return channel.writeAndFlush(msg);
+    	//update by wanghaiting
+    	if(msg != null)
+    		return channel.writeAndFlush(msg);
+    	else{
+    		channel.disconnect();
+    		channel.close();
+    		return channel.newFailedFuture(new Throwable("msg is null..."));
+    	}
     }
 
     /***************************************************************************

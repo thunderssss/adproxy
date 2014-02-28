@@ -189,6 +189,9 @@ public class ClientToProxyConnection extends ProxyConnection<HttpRequest> {
      * @return
      */
     private ConnectionState doReadHTTPInitial(HttpRequest httpRequest) {
+    	httpRequest.setUri(httpRequest.getUri().replaceAll("http://[^/]*/", "/"));
+    	//update by wanghaiting
+    	httpRequest.headers().remove("Accept-Encoding");
         // Make a copy of the original request
         HttpRequest originalRequest = copy(httpRequest);
 
@@ -290,11 +293,17 @@ public class ClientToProxyConnection extends ProxyConnection<HttpRequest> {
     		return false;
     }
     
-    private boolean checkHtml(HttpResponse resp){
-    	if(resp.headers().get("Content-Type").indexOf("text/html")!=-1)
-    		return true;
-    	else
+    private boolean checkAvalidHtml(HttpResponse resp){
+    	if(resp.getStatus().code() != 200)
     		return false;
+    	if(resp.headers()!= null){
+    		if(resp.headers().contains("Content-Type"))
+    			if(resp.headers().get("Content-Type").indexOf("text/html")!=-1)
+    				return true;
+    			else
+    				return false;
+    	}
+    	return false;
     }
     
     /***************************************************************************
@@ -332,74 +341,112 @@ public class ClientToProxyConnection extends ProxyConnection<HttpRequest> {
             modifyResponseHeadersToReflectProxying(httpResponse);
         }
 
-        httpObject = filters.responsePost(httpObject,currentHttpRequest,currentHttpResponse);
+//        httpObject = filters.responsePost(httpObject,currentHttpRequest,currentHttpResponse);
         if (httpObject == null) {
             forceDisconnect(serverConnection);
             return;
         }
-      
+        
         //如果发现本次请求是CHUNK，并且HTTPOBJECT属于 DefaultHttpContent
-        if(checkHtml(currentHttpResponse) && HttpHeaders.isTransferEncodingChunked(currentHttpResponse)){
-        	//将每一个chunk缓存至tmp,每一个WRITE操作就是针对上一个chunk 发送的,
-        	//当发现时最后一个CHUNK时,将最后一个CHUNK连同空CHUNK 一并发送
-        	 if (ProxyUtils.isLastChunk(httpObject)) {
-        		 write(this.getTmpObject());
-                 writeEmptyBuffer();
-             }else if(httpObject instanceof DefaultHttpContent){
-            	 DefaultHttpContent con = (DefaultHttpContent)httpObject;
-        		if(this.getTmpObject() != null)
-            		write(this.getTmpObject());
-        		if(checkIsGzip(currentHttpResponse) || this.isGzip()){
-        			  //为方便嵌入广告，直接将压缩格式HEADE去掉
-        			this.setGzip(true);
-                    currentHttpResponse.headers().remove("Content-Encoding");
-        			decoder.setMessage(currentHttpResponse);
-        			this.setTmpObject(decodeHttpObject(con));
-        		}else
-        			this.setTmpObject(con.copy());
+        if(checkAvalidHtml(currentHttpResponse)){
+        	if(HttpHeaders.isTransferEncodingChunked(currentHttpResponse) || this.isChunked()){
+        		currentHttpRequest.headers().set("IS_CHUNK", "true");
+        		this.setChunked(true);
+	        	//将每一个chunk缓存至tmp,每一个WRITE操作就是针对上一个chunk 发送的,
+	        	//当发现时最后一个CHUNK时,将最后一个CHUNK连同空CHUNK 一并发送
+	        	 if (ProxyUtils.isLastChunk(httpObject)) {
+	        		 HttpObject lastChunk = filters.responsePost(this.getTmpObject(),currentHttpRequest,currentHttpResponse);
+	        		 write(lastChunk);
+	                 writeEmptyBuffer();
+	             }else if(httpObject instanceof HttpContent){
+	            	 HttpContent con = (HttpContent)httpObject;
+	            	 //增加内容大小计数
+	            	 this.addChunkLength(con.content().writerIndex());
+	            	 
+	        		if(this.getTmpObject() != null)
+	            		write(this.getTmpObject());
+	        		if(checkIsGzip(currentHttpResponse) || this.isGzip()){
+	        			  //为方便嵌入广告，直接将压缩格式HEADE去掉
+	        			this.setGzip(true);
+//	                    currentHttpResponse.headers().remove("Content-Encoding");
+	        			decoder.setMessage(currentHttpResponse);
+	        			httpObject = null;
+	        			this.setTmpObject(decodeHttpObject(con));
+	        		}else
+	        			this.setTmpObject(con.copy());
+	        	}else{
+//	        		if(httpObject instanceof HttpResponse ){
+//	        			 //为方便嵌入广告，直接将压缩格式HEADE去掉
+//	        			if(this.isGzip())
+//	        				((HttpResponse)httpObject).headers().remove("Content-Encoding");
+//	        		}
+	        		write(httpObject);
+	        	}
         	}else{
-        		if(httpObject instanceof HttpResponse ){
-        			 //为方便嵌入广告，直接将压缩格式HEADE去掉
-        			if(this.isGzip())
-        				((HttpResponse)httpObject).headers().remove("Content-Encoding");
+        		if(httpObject instanceof DefaultHttpContent){
+        			DefaultHttpContent con = (DefaultHttpContent)httpObject;
+        			 //增加内容大小计数
+        			this.addChunkLength(con.content().writerIndex());
+        			if(checkIsGzip(currentHttpResponse) || this.isGzip()){
+            			  //为方便嵌入广告，直接将压缩格式HEADE去掉
+      	      			this.setGzip(true);
+//      	                currentHttpResponse.headers().remove("Content-Encoding");
+      	      			decoder.setMessage(currentHttpResponse);
+	      	      		httpObject = decodeHttpObject(con);
+      	      		}
         		}
-        		write(httpObject);
-        	}
+        		currentHttpRequest.headers().set("IS_CHUNK", "false");
+//        		HttpObject object = filters.responsePost(httpObject,currentHttpRequest,currentHttpResponse);
+//        		write(object);
         		
+        		long length = getContentLength(currentHttpResponse);
+        		if(length !=0 && chunkRespContentLength >= length){
+        			//对http 数据包进行修改
+        			 HttpObject object = filters.responsePost(httpObject,currentHttpRequest,currentHttpResponse);
+            		 write(object);
+        		}else {
+        			//对 response进行内容大小判断，如果判断符合插入广告条件，则修改内容大小(增加广告包)
+        			 HttpObject object = filters.responsePost(httpObject);
+        			write(object);
+        		}
+        			
+        		
+        	}
         }else {
-//        	if(httpObject instanceof HttpResponse){
-//        		HttpResponse res = ((HttpResponse) httpObject);
-//        		if(res.headers().contains("Content-Encoding")){
-////        			serverConnection.setGzip(true);
-//        			res.headers().remove("Content-Encoding");
-//        		}	
-//        	}
         	write(httpObject);
         }
-        	
-        
         closeConnectionsAfterWriteIfNecessary(serverConnection,
                 currentHttpRequest, currentHttpResponse, httpObject);
     }
 
-    private DefaultHttpContent decodeHttpObject(DefaultHttpContent content){
-    	ArrayList<Object> list = new ArrayList<Object>();
-    	try {
-//    		content.content().clear();
-    		decoder.decode2(ctx, content, list);
-    		for(Object obj : list){
-    			if(obj instanceof DefaultHttpContent){
-    				DefaultHttpContent con = (DefaultHttpContent)obj;
-    				return con;
-    			}
-    			
-    		}
-			return content;
-			
-		} catch (Exception e) {
-			e.printStackTrace();
-			return null;
-		}
+	private long getContentLength(HttpResponse response) {
+		String value = response.headers().get("Content-Length");
+		if (value != null) {
+			return Long.parseLong(value);
+		} else
+			return 0;
+	}
+    
+    private HttpContent decodeHttpObject(HttpContent content){
+    	return content.copy();
+//    	ArrayList<Object> list = new ArrayList<Object>();
+//    	try {
+////    		content.content().clear();
+//    		decoder.decode2(ctx, content, list);
+//    		content = null;
+//    		for(Object obj : list){
+//    			if(obj instanceof DefaultHttpContent){
+//    				DefaultHttpContent con = (DefaultHttpContent)obj;
+//    				return con;
+//    			}
+//    			
+//    		}
+//			return content;
+//			
+//		} catch (Exception e) {
+//			e.printStackTrace();
+//			return null;
+//		}
     }
     
     /**
